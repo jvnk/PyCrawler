@@ -1,3 +1,4 @@
+import argparse
 import sys
 import re
 import urllib2
@@ -5,37 +6,39 @@ import urlparse
 import threading
 import sqlite3 as sqlite
 import robotparser
+
+desc = """PyCrawler accepts the following arguments:
+		* = optional, defaults to false.
+		1) database file name
+		2) start url
+		3) crawl depth
+		4) Follow off-site links (true/false) *
+		5) verbose (true/false) *
+		6) strip html (true/false) *
+		7) content fetching (true/false) *
+		"""
+parser = argparse.ArgumentParser(description=desc)
+parser.add_argument('--dbname', help="The db file to be created for storing crawl data.", default="crawl.db")
+parser.add_argument('starturl', help="The root URL to start crawling from.")
+parser.add_argument('crawldepth', type=int, help="Number of levels to crawl down to before quitting. Default is 10.", default=10)
+parser.add_argument('--follow-extern', type=bool, help="Follow external links.", default=False)
+parser.add_argument('--verbose', type=bool, help="Be verbose while crawling.", default=False)
+parser.add_argument('--strip-html', type=bool, help="Strip HTML tags from crawled content.", default=False)
+parser.add_argument('--download-static', type=bool, help="Download static content.", default=False)
+arguments = parser.parse_args()
+
 # Try to import psyco for JIT compilation
 try:
 	import psyco
 	psyco.full()
 except ImportError:
-	print "Continuing without psyco JIT compilation!"
-
-"""
-The program should take arguments
-1) database file name
-2) start url
-3) crawl depth 
-4) verbose (optional)
-5) strip html (true/false)
-Start out by checking to see if the args are there and
-set them to their variables
-"""
-if len(sys.argv) < 4:
-	sys.exit("Not enough arguments!")
-else:
-	dbname = sys.argv[1]
-	starturl = sys.argv[2]
-	crawldepth = int(sys.argv[3])
-	verbose = True if sys.argv[4] is not None and sys.argv[4].upper() == "TRUE" else False
-	strip = True if sys.argv[5] is not None and sys.argv[5].upper() == "TRUE" else False
+	print "Continuing without psyco JIT compilation!"			
 			
 # urlparse the start url
-surlparsed = urlparse.urlparse(starturl)
+surlparsed = urlparse.urlparse(arguments.starturl)
 
 # Connect to the db and create the tables if they don't already exist
-connection = sqlite.connect(dbname)
+connection = sqlite.connect(arguments.dbname)
 cursor = connection.cursor()
 # crawl_index: holds all the information of the urls that have been crawled
 cursor.execute('CREATE TABLE IF NOT EXISTS crawl_index (crawlid INTEGER, parentid INTEGER, url VARCHAR(256), title VARCHAR(256), keywords VARCHAR(256) )')
@@ -53,11 +56,8 @@ crawled = []
 
 # set crawling status and stick starting url into the queue
 cursor.execute("INSERT INTO status VALUES ((?), (?))", (1, "datetime('now')"))
-cursor.execute("INSERT INTO queue VALUES ((?), (?), (?), (?))", (None, 0, 0, starturl))
+cursor.execute("INSERT INTO queue VALUES ((?), (?), (?), (?))", (None, 0, 0, arguments.starturl))
 connection.commit()
-
-
-# insert starting url into queue
 
 class threader ( threading.Thread ):
 	
@@ -80,8 +80,11 @@ class threader ( threading.Thread ):
 				# Remove the item from the queue
 				cursor.execute("DELETE FROM queue WHERE id = (?)", (crawling[0], ))
 				connection.commit()
-				if verbose:
+				if arguments.verbose:
 					print crawling[3]
+				if arguments.strip-html:
+					#implement html stripping
+					pass
 			except KeyError:
 				raise StopIteration
 			except:
@@ -122,7 +125,7 @@ class threader ( threading.Thread ):
 		
 			# If we're not allowed to open a url, return the function to skip it
 			if not self.rp.can_fetch('PyCrawler', curl):
-				if verbose:
+				if arguments.verbose:
 					print curl + " not allowed by robots.txt"
 				return
 		except:
@@ -161,8 +164,6 @@ class threader ( threading.Thread ):
 		else:
 			keywordlist = ""
 			
-		
-			
 		# Get the links
 		links = linkregex.findall(msg)
 		# queue up the links
@@ -177,7 +178,7 @@ class threader ( threading.Thread ):
 			
 			
 	def queue_links(self, url, links, cid, curdepth):
-		if curdepth < crawldepth:
+		if curdepth < arguments.crawldepth:
 			# Read the links and inser them into the queue
 			for link in links:
 				cursor.execute("SELECT url FROM queue WHERE url=?", [link])
