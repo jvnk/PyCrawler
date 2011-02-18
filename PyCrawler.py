@@ -18,6 +18,7 @@ The program should take arguments
 2) start url
 3) crawl depth 
 4) verbose (optional)
+5) strip html (true/false)
 Start out by checking to see if the args are there and
 set them to their variables
 """
@@ -27,13 +28,9 @@ else:
 	dbname = sys.argv[1]
 	starturl = sys.argv[2]
 	crawldepth = int(sys.argv[3])
-if len(sys.argv) == 5:
-	if (sys.argv[4].upper() == "TRUE"):
-		verbose = True
-	else:
-		verbose = False
-else:
-	verbose = False
+	verbose = True if sys.argv[4] is not None and sys.argv[4].upper() == "TRUE" else False
+	strip = True if sys.argv[5] is not None and sys.argv[5].upper() == "TRUE" else False
+			
 # urlparse the start url
 surlparsed = urlparse.urlparse(starturl)
 
@@ -103,7 +100,7 @@ class threader ( threading.Thread ):
 	Args:
 		crawling: this should be a url
 	
-	crawl() opens the page at the "crawling" url, parses it and puts it into the databes.
+	crawl() opens the page at the "crawling" url, parses it and puts it into the database.
 	It looks for the page title, keywords, and links.
 	"""
 	def crawl(self, crawling):
