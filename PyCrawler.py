@@ -18,13 +18,13 @@ desc = """PyCrawler accepts the following arguments:
 		7) content fetching (true/false) *
 		"""
 parser = argparse.ArgumentParser(description=desc)
-parser.add_argument('--dbname', help="The db file to be created for storing crawl data.", default="crawl.db")
 parser.add_argument('starturl', help="The root URL to start crawling from.")
 parser.add_argument('crawldepth', type=int, help="Number of levels to crawl down to before quitting. Default is 10.", default=10)
-parser.add_argument('--follow-extern', type=bool, help="Follow external links.", default=False)
-parser.add_argument('--verbose', type=bool, help="Be verbose while crawling.", default=False)
-parser.add_argument('--strip-html', type=bool, help="Strip HTML tags from crawled content.", default=False)
-parser.add_argument('--download-static', type=bool, help="Download static content.", default=False)
+parser.add_argument('--dbname', help="The db file to be created for storing crawl data.", default="crawl.db")
+parser.add_argument('--followextern', help="Follow external links.", action='store_true', default=False)
+parser.add_argument('--verbose', help="Be verbose while crawling.", action='store_true', default=False)
+parser.add_argument('--striphtml', help="Strip HTML tags from crawled content.", action='store_true', default=False)
+parser.add_argument('--downloadstatic', help="Download static content.", action='store_true', default=False)
 arguments = parser.parse_args()
 
 # Try to import psyco for JIT compilation
@@ -32,8 +32,8 @@ try:
 	import psyco
 	psyco.full()
 except ImportError:
-	print "Continuing without psyco JIT compilation!"			
-			
+	print "Continuing without psyco JIT compilation!"
+
 # urlparse the start url
 surlparsed = urlparse.urlparse(arguments.starturl)
 
@@ -72,6 +72,7 @@ class threader ( threading.Thread ):
 	at the top of the queue and starts the crawl of it. 
 	"""
 	def run(self):
+		self.firstrun = True
 		while 1:
 			try:
 				# Get the first item from the queue
@@ -80,24 +81,19 @@ class threader ( threading.Thread ):
 				# Remove the item from the queue
 				cursor.execute("DELETE FROM queue WHERE id = (?)", (crawling[0], ))
 				connection.commit()
-				if arguments.verbose:
-					print crawling[3]
-				if arguments.strip-html:
-					#implement html stripping
-					pass
+				print crawling[3]
 			except KeyError:
 				raise StopIteration
 			except:
 				pass
 			
-			# if theres nothing in the que, then set the status to done and exit
+			# if theres nothing in the queue, then set the status to done and exit
 			if crawling == None:
 				cursor.execute("INSERT INTO status VALUES ((?), datetime('now'))", (0,))
 				connection.commit()
 				sys.exit("Done!")
-			# Crawl the link
 			self.crawl(crawling)
-		
+			
 	"""
 	crawl()
 	Args:
@@ -107,6 +103,7 @@ class threader ( threading.Thread ):
 	It looks for the page title, keywords, and links.
 	"""
 	def crawl(self, crawling):
+	
 		# crawler id
 		cid = crawling[0]
 		# parent id. 0 if start url
@@ -115,9 +112,23 @@ class threader ( threading.Thread ):
 		curdepth = crawling[2]
 		# crawling urL
 		curl = crawling[3]
+			
+		#for debug purposes
+		self.current_url = curl
 		# Split the link into its sections
 		url = urlparse.urlparse(curl)
 		
+		if self.firstrun:
+			self.root_domain = url[1]
+			print "Setting root domain to " + self.root_domain
+			self.firstrun = False
+			
+		if not arguments.followextern:
+			urlparts = url[1].split('.')
+			domain = urlparts[-2] + "." + urlparts[-1]
+			if not domain == self.root_domain:
+				print "Found external link, " + url[1] + ", not follwing"
+				return
 		try:
 			# Have our robot parser grab the robots.txt file and read it
 			self.rp.set_url('http://' + url[1] + '/robots.txt')
@@ -156,7 +167,8 @@ class threader ( threading.Thread ):
 			endPos = msg.find('</title>', startPos+7)
 			if endPos != -1:
 				title = msg[startPos+7:endPos]
-			
+				self.title = title
+				
 		# Start keywords list with whats in the keywords meta tag if there is one
 		keywordlist = keywordregex.findall(msg)
 		if len(keywordlist) > 0:
@@ -169,12 +181,15 @@ class threader ( threading.Thread ):
 		# queue up the links
 		self.queue_links(url, links, cid, curdepth)
 
+		if arguments.striphtml:
+			self.strip_html(msg)
+
 		try:
 			# Put now crawled link into the db
 			cursor.execute("INSERT INTO crawl_index VALUES( (?), (?), (?), (?), (?) )", (cid, pid, curl, title, keywordlist))
 			connection.commit()
 		except:
-			pass
+			print "unable to insert %s into db." % curl
 			
 			
 	def queue_links(self, url, links, cid, curdepth):
@@ -200,6 +215,35 @@ class threader ( threading.Thread ):
 						continue
 		else:
 			pass
+			
+	def strip_html(self, msg):
+		print "We're in strip html for %s" % self.current_url
+		tagPattern = re.compile(r'<([a-z][A-Z0-9]*)\b[^>]*>(.*?)</\1>|<([a-z][A-Z0-9]*)\b[^>]*>|</([A-Z][A-Z0-9]*)>')
+		
+		linecount = 0
+		
+		tags = tagPattern.findall(msg)
+		
+		for tag in tags:
+			print ("Line: %s of page %s, on tags: %s" % (linecount, self.current_url, tag))
+			if tag.find("script"):
+				#script method
+				pass
+			elif tag.find("style"):
+				#style method
+				pass
+			elif tag.find("meta"):
+				#metadata method
+				pass
+			#subtitute tags for whitespace
+			#re.sub(tagregex, '', line)
+		#should end up with a cleaned msg at this point for insertion into db
+		#insert content into db with URL and page title
+		
+		if arguments.verbose:
+			print "Page:\n"
+			print msg
+		
 if __name__ == '__main__':
 	# Run main loop
 	threader().run()
