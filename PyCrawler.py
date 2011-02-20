@@ -7,17 +7,6 @@ import threading
 import sqlite3 as sqlite
 import robotparser
 
-desc = """PyCrawler accepts the following arguments:
-		* = optional, defaults to false.
-		1) database file name
-		2) start url
-		3) crawl depth
-		4) Follow off-site links (true/false) *
-		5) verbose (true/false) *
-		6) strip html (true/false) *
-		7) content fetching (true/false) *
-		"""
-parser = argparse.ArgumentParser(description=desc)
 parser.add_argument('starturl', help="The root URL to start crawling from.")
 parser.add_argument('crawldepth', type=int, help="Number of levels to crawl down to before quitting. Default is 10.", default=10)
 parser.add_argument('--dbname', help="The db file to be created for storing crawl data.", default="crawl.db")
