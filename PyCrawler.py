@@ -6,7 +6,9 @@ import urlparse
 import threading
 import sqlite3 as sqlite
 import robotparser
+import BeautifulSoup
 
+parser = argparse.ArgumentParser()
 parser.add_argument('starturl', help="The root URL to start crawling from.")
 parser.add_argument('crawldepth', type=int, help="Number of levels to crawl down to before quitting. Default is 10.", default=10)
 parser.add_argument('--dbname', help="The db file to be created for storing crawl data.", default="crawl.db")
@@ -30,22 +32,22 @@ surlparsed = urlparse.urlparse(arguments.starturl)
 connection = sqlite.connect(arguments.dbname)
 cursor = connection.cursor()
 # crawl_index: holds all the information of the urls that have been crawled
-cursor.execute('CREATE TABLE IF NOT EXISTS crawl_index (crawlid INTEGER, parentid INTEGER, url VARCHAR(256), title VARCHAR(256), keywords VARCHAR(256) )')
+cursor.execute('CREATE TABLE IF NOT EXISTS crawl_index (crawlid INTEGER, parentid INTEGER, url VARCHAR(256), title VARCHAR(256), keywords VARCHAR(256), UNIQUE(url))')
 # queue: this should be obvious
-cursor.execute('CREATE TABLE IF NOT EXISTS queue (id INTEGER PRIMARY KEY, parent INTEGER, depth INTEGER, url VARCHAR(256))')
+cursor.execute('CREATE TABLE IF NOT EXISTS queue (id INTEGER PRIMARY KEY, parent INTEGER, depth INTEGER, url VARCHAR(256), crawled INTEGER, UNIQUE(url))')
 # status: Contains a record of when crawling was started and stopped. 
 # Mostly in place for a future application to watch the crawl interactively.
 cursor.execute('CREATE TABLE IF NOT EXISTS status ( s INTEGER, t TEXT )')
 connection.commit()
 
-# Compile keyword and link regex expressions
+# Compile keyword, link, and general tag regular expressions
 keywordregex = re.compile('<meta\sname=["\']keywords["\']\scontent=["\'](.*?)["\']\s/>')
 linkregex = re.compile('<a.*\shref=[\'"](.*?)[\'"].*?>')
-crawled = []
+tagregex = re.compile(r'<([a-z][A-Z0-9]*)\b[^>]*>(.*?)</\1>|<([a-z][A-Z0-9]*)\b[^>]*>|</([A-Z][A-Z0-9]*)>')
 
 # set crawling status and stick starting url into the queue
 cursor.execute("INSERT INTO status VALUES ((?), (?))", (1, "datetime('now')"))
-cursor.execute("INSERT INTO queue VALUES ((?), (?), (?), (?))", (None, 0, 0, arguments.starturl))
+cursor.execute("INSERT INTO queue VALUES ((?), (?), (?), (?), (?))", (None, 0, 0, arguments.starturl, 0))
 connection.commit()
 
 class threader ( threading.Thread ):
@@ -61,14 +63,16 @@ class threader ( threading.Thread ):
 	at the top of the queue and starts the crawl of it. 
 	"""
 	def run(self):
-		self.firstrun = True
+		urlparts = arguments.starturl.split('.')
+		self.rootdomain = urlparts[-2] + "." + urlparts[-1]
+		print "Setting root domain to " + self.rootdomain
 		while 1:
 			try:
-				# Get the first item from the queue
-				cursor.execute("SELECT * FROM queue LIMIT 1")
+				#Get the first item from the queue
+				cursor.execute("SELECT * FROM queue WHERE crawled = 0 LIMIT 1")
 				crawling = cursor.fetchone()
-				# Remove the item from the queue
-				cursor.execute("DELETE FROM queue WHERE id = (?)", (crawling[0], ))
+				#Remove the item from the queue
+				#cursor.execute("DELETE FROM queue WHERE id = (?)", (crawling[0], ))
 				connection.commit()
 				print crawling[3]
 			except KeyError:
@@ -76,7 +80,7 @@ class threader ( threading.Thread ):
 			except:
 				pass
 			
-			# if theres nothing in the queue, then set the status to done and exit
+			# if theres nothing in the queue that hasn't been crawled, then set the status to done and exit
 			if crawling == None:
 				cursor.execute("INSERT INTO status VALUES ((?), datetime('now'))", (0,))
 				connection.commit()
@@ -103,19 +107,14 @@ class threader ( threading.Thread ):
 		curl = crawling[3]
 			
 		#for debug purposes
-		self.current_url = curl
+		self.currenturl = curl
 		# Split the link into its sections
 		url = urlparse.urlparse(curl)
-		
-		if self.firstrun:
-			self.root_domain = url[1]
-			print "Setting root domain to " + self.root_domain
-			self.firstrun = False
 			
 		if not arguments.followextern:
 			urlparts = url[1].split('.')
-			domain = urlparts[-2] + "." + urlparts[-1]
-			if not domain == self.root_domain:
+			currentdomain = urlparts[-2] + "." + urlparts[-1]
+			if not currentdomain == self.rootdomain:
 				print "Found external link, " + url[1] + ", not follwing"
 				return
 		try:
@@ -132,13 +131,7 @@ class threader ( threading.Thread ):
 			pass
 			
 		try:
-			# Add the link to the already crawled list
-			crawled.append(curl)
-		except MemoryError:
-			# If the crawled array is too big, deleted it and start over
-			del crawled[:]
-		try:
-			# Create a Request object
+			# Create a Request object, get the page's html, feed it to beautifulsoup
 			request = urllib2.Request(curl)
 			# Add user-agent header to the request
 			request.add_header("User-Agent", "PyCrawler")
@@ -146,19 +139,15 @@ class threader ( threading.Thread ):
 			opener = urllib2.build_opener()
 			msg = opener.open(request).read()
 			
+			html = BeautifulSoup(''.join(msg))
 		except:
 			# If it doesn't load, skip this url
 			return
-		
-		# Find what's between the title tags
-		startPos = msg.find('<title>')
-		if startPos != -1:
-			endPos = msg.find('</title>', startPos+7)
-			if endPos != -1:
-				title = msg[startPos+7:endPos]
-				self.title = title
+		#grab page title
+		title = html.html.head.title.string()	
 				
 		# Start keywords list with whats in the keywords meta tag if there is one
+		
 		keywordlist = keywordregex.findall(msg)
 		if len(keywordlist) > 0:
 			keywordlist = keywordlist[0]
@@ -174,16 +163,16 @@ class threader ( threading.Thread ):
 			self.strip_html(msg)
 
 		try:
-			# Put now crawled link into the db
+			# Put now crawled link into crawl_index, set crawled to 1 in queue
 			cursor.execute("INSERT INTO crawl_index VALUES( (?), (?), (?), (?), (?) )", (cid, pid, curl, title, keywordlist))
+			cursor.execute("UPDATE queue SET crawled = 1 WHERE url = (?)", (crawling[3]))
 			connection.commit()
 		except:
-			print "unable to insert %s into db." % curl
-			
+			print "unable to insert %s into db" % curl
 			
 	def queue_links(self, url, links, cid, curdepth):
 		if curdepth < arguments.crawldepth:
-			# Read the links and inser them into the queue
+			# Read the links and put them in the queue. Duplicate links will fail.
 			for link in links:
 				cursor.execute("SELECT url FROM queue WHERE url=?", [link])
 				for row in cursor:
@@ -195,39 +184,16 @@ class threader ( threading.Thread ):
 					continue
 				elif not link.startswith('http'):
 					link = urlparse.urljoin(url.geturl(),link)
-				
-				if link.decode('utf-8') not in crawled:
-					try:
-						cursor.execute("INSERT INTO queue VALUES ( (?), (?), (?), (?) )", (None, cid, curdepth+1, link))
-						connection.commit()
-					except:
-						continue
+				#insert into queue. if we've already been to this url, it won't be inserted into the queue
+				cursor.execute("INSERT INTO queue VALUES ( (?), (?), (?), (?), (?) )", (None, cid, curdepth+1, link, 0))
+				connection.commit()
 		else:
 			pass
 			
-	def strip_html(self, msg):
+	def strip_html(self, html):
 		print "We're in strip html for %s" % self.current_url
-		tagPattern = re.compile(r'<([a-z][A-Z0-9]*)\b[^>]*>(.*?)</\1>|<([a-z][A-Z0-9]*)\b[^>]*>|</([A-Z][A-Z0-9]*)>')
 		
-		linecount = 0
-		
-		tags = tagPattern.findall(msg)
-		
-		for tag in tags:
-			print ("Line: %s of page %s, on tags: %s" % (linecount, self.current_url, tag))
-			if tag.find("script"):
-				#script method
-				pass
-			elif tag.find("style"):
-				#style method
-				pass
-			elif tag.find("meta"):
-				#metadata method
-				pass
-			#subtitute tags for whitespace
-			#re.sub(tagregex, '', line)
-		#should end up with a cleaned msg at this point for insertion into db
-		#insert content into db with URL and page title
+		#final command called, to strip the all tags after we've stripped any content we want.
 		
 		if arguments.verbose:
 			print "Page:\n"
